@@ -1,10 +1,12 @@
 import os
 import logging
 import re
+import tempfile
+import zipfile
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-# Bot Token - YAHAN APNA TOKEN DALDO
+# Bot Token
 BOT_TOKEN = "8150871986:AAFuCQYErxA2ov9OaNdsL2_P6m5Zy_P7OJs"
 
 # Enable logging
@@ -14,152 +16,172 @@ logger = logging.getLogger(__name__)
 # /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
-        "🤖 **Smart VCF Bot**\n\n"
-        "Mujhe kisi bhi format mein details bhejiye:\n\n"
-        "**Examples:**\n"
-        "• Name: Raj, Phone: 9876543210\n"
-        "• Raj - 9876543210\n"
-        "• Raj 9876543210\n"
-        "• Raj\\n9876543210\\nraj@email.com\n"
-        "• मेरा नाम राज है, मेरा नंबर ९८७६५४३२१० है\n"
-        "• Raj, 9876543210, raj@email.com\n\n"
-        "📍 **Mujhe samajhne ki aadat hai!**\n"
-        "Kisi bhi format mein bhejiye, main banajaunga VCF file!"
+        "🤖 **Bulk VCF Generator Bot**\n\n"
+        "📦 **50+ Contacts ke liye Ready!**\n\n"
+        "Mujhe contacts list bhejiye:\n\n"
+        "**Format 1 (Single):**\n"
+        "Raj, 9876543210, raj@email.com\n\n"
+        "**Format 2 (Multiple):**\n"
+        "Raj, 9876543210\n"
+        "Priya, 9123456789\n"
+        "Amit, 9812345678\n\n"
+        "**Format 3 (Bulk):**\n"
+        "Name, Phone, Email\n"
+        "Raj, 9876543210, raj@email.com\n"
+        "Priya, 9123456789, priya@email.com\n"
+        "Amit, 9812345678, amit@email.com\n\n"
+        "📍 **Main 1000+ contacts bana sakta hoon!**"
     )
     await update.message.reply_text(help_text)
 
-# Smart data extraction function
-def extract_contact_info(text):
-    # Convert Hindi numbers to English
-    text = convert_hindi_numbers(text)
+# Extract single contact info
+def extract_single_contact(text):
+    # Clean the text
+    text = re.sub(r'\s+', ' ', text.strip())
     
-    # Initialize data
-    data = {'name': 'Unknown', 'phone': '', 'email': '', 'org': ''}
-    
-    # Common patterns
+    # Different patterns for extraction
     patterns = [
-        # Pattern 1: Name: value, Phone: value
-        r'(?:name|nama|naam|नाम|نام)[\s:]*([^\n,]+)[,\n]*(?:phone|number|mobile|फोन|नंबर|موبایل)[\s:]*([+\d\s-]+)',
-        # Pattern 2: Phone: value, Name: value  
-        r'(?:phone|number|mobile|फोन|नंबर|موبایل)[\s:]*([+\d\s-]+)[,\n]*(?:name|nama|naam|नाम|نام)[\s:]*([^\n,]+)',
-        # Pattern 3: Name - Phone
-        r'([^\d+\n,]+?)[\s-]+([+\d][\d\s-]{8,})',
-        # Pattern 4: Phone - Name
-        r'([+\d][\d\s-]{8,})[\s-]+([^\d+\n,]+)',
-        # Pattern 5: Just phone number (extract from text)
-        r'([+\d][\d\s-]{8,})',
-        # Pattern 6: Email pattern
-        r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
+        # Name, Phone, Email
+        r'([^,]+),([^,]+),([^,]+)',
+        # Name, Phone
+        r'([^,]+),([^,]+)',
+        # Name - Phone - Email
+        r'([^-]+)-([^-]+)-([^-]+)',
+        # Name - Phone
+        r'([^-]+)-([^-]+)',
+        # Just phone number
+        r'(\+?[0-9\s\-\(\)]{8,})'
     ]
     
-    # Try each pattern
+    contact = {'name': 'Unknown', 'phone': '', 'email': ''}
+    
     for pattern in patterns:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        if matches:
-            if 'name' in pattern and 'phone' in pattern:
-                data['name'] = matches[0][0].strip()
-                data['phone'] = matches[0][1].strip()
-            elif 'phone' in pattern and 'name' in pattern:
-                data['phone'] = matches[0][0].strip()
-                data['name'] = matches[0][1].strip()
-            elif pattern == patterns[2]:  # Name - Phone
-                data['name'] = matches[0][0].strip()
-                data['phone'] = matches[0][1].strip()
-            elif pattern == patterns[3]:  # Phone - Name
-                data['phone'] = matches[0][0].strip()
-                data['name'] = matches[0][1].strip()
-            elif pattern == patterns[4]:  # Just phone
-                data['phone'] = matches[0].strip()
+        match = re.search(pattern, text)
+        if match:
+            groups = [g.strip() for g in match.groups()]
+            
+            if len(groups) >= 2:
+                contact['name'] = groups[0]
+                contact['phone'] = re.sub(r'\D', '', groups[1])  # Keep only digits
+                
+                if len(groups) >= 3:
+                    contact['email'] = groups[2]
+            
+            elif len(groups) == 1 and pattern == patterns[4]:
+                contact['phone'] = re.sub(r'\D', '', groups[0])
                 # Try to extract name from remaining text
-                name_match = re.search(r'([^\d+\n,]+)', text.replace(data['phone'], ''))
-                if name_match:
-                    data['name'] = name_match.group(1).strip()
-            elif pattern == patterns[5]:  # Email
-                data['email'] = matches[0].strip()
+                name_part = text.replace(groups[0], '').strip()
+                if name_part:
+                    contact['name'] = name_part
+            
+            break
     
-    # Clean up the data
-    data['name'] = data['name'].title()
-    data['phone'] = re.sub(r'\s+', '', data['phone'])  # Remove spaces from phone
+    # If phone is found but name is still Unknown, use "Contact"
+    if contact['phone'] and contact['name'] == 'Unknown':
+        contact['name'] = f"Contact_{contact['phone'][-4:]}"
     
-    # If no name found, use first word from text
-    if data['name'] == 'Unknown':
-        words = text.split()
-        if words:
-            data['name'] = words[0].title()
-    
-    return data
+    return contact
 
-# Convert Hindi numbers to English
-def convert_hindi_numbers(text):
-    hindi_to_english = {
-        '०': '0', '१': '1', '२': '2', '३': '3', '४': '4',
-        '५': '5', '६': '6', '७': '7', '८': '8', '९': '9'
-    }
-    for hindi, english in hindi_to_english.items():
-        text = text.replace(hindi, english)
-    return text
+# Process bulk contacts
+def process_bulk_contacts(text):
+    contacts = []
+    lines = text.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if line and not line.lower().startswith(('name', 'phone', 'email')):
+            contact = extract_single_contact(line)
+            if contact['phone']:  # Only add if phone exists
+                contacts.append(contact)
+    
+    return contacts
 
-# VCF generate function
-def generate_vcf(name, phone, email=None, org=None):
+# Generate VCF content
+def generate_vcf(name, phone, email=None):
     vcf_content = f"""BEGIN:VCARD
 VERSION:3.0
 FN:{name}
 TEL;TYPE=CELL:{phone}
 """
-    if email:
+    if email and '@' in email:
         vcf_content += f"EMAIL:{email}\n"
-    if org:
-        vcf_content += f"ORG:{org}\n"
     vcf_content += "END:VCARD"
     return vcf_content
 
+# Create ZIP file with multiple VCFs
+def create_contacts_zip(contacts):
+    # Create temporary directory
+    with tempfile.TemporaryDirectory() as temp_dir:
+        zip_path = os.path.join(temp_dir, "contacts.zip")
+        
+        with zipfile.ZipFile(zip_path, 'w') as zipf:
+            for i, contact in enumerate(contacts, 1):
+                vcf_content = generate_vcf(contact['name'], contact['phone'], contact['email'])
+                vcf_filename = f"{contact['name'].replace(' ', '_')}_{i}.vcf"
+                vcf_path = os.path.join(temp_dir, vcf_filename)
+                
+                with open(vcf_path, 'w', encoding='utf-8') as vcf_file:
+                    vcf_file.write(vcf_content)
+                
+                zipf.write(vcf_path, vcf_filename)
+        
+        return zip_path
+
 # Handle messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    
-    # Extract information using smart parser
-    data = extract_contact_info(user_text)
-    
-    # If no phone found, ask for it
-    if not data['phone']:
+    try:
+        user_text = update.message.text
+        
+        # Process contacts
+        contacts = process_bulk_contacts(user_text)
+        
+        if not contacts:
+            await update.message.reply_text(
+                "❌ Mujhe koi valid contacts nahi mile.\n\n"
+                "Kripya is format mein bhejiye:\n"
+                "Raj, 9876543210\n"
+                "Priya, 9123456789\n"
+                "Amit, 9812345678"
+            )
+            return
+        
+        # Show processing message
+        processing_msg = await update.message.reply_text(
+            f"🔄 Processing {len(contacts)} contacts..."
+        )
+        
+        # Create ZIP file
+        zip_path = create_contacts_zip(contacts)
+        
+        # Send ZIP file
+        with open(zip_path, 'rb') as zip_file:
+            await update.message.reply_document(
+                document=zip_file,
+                filename="contacts.zip",
+                caption=f"✅ **{len(contacts)} Contacts Ready!**\n\n"
+                       f"📦 ZIP file download karein aur extract karein\n"
+                       f"📞 Phir contacts mein save karein\n\n"
+                       f"✨ Total Contacts: {len(contacts)}",
+                parse_mode='Markdown'
+            )
+        
+        # Delete processing message
+        await context.bot.delete_message(
+            chat_id=update.message.chat_id,
+            message_id=processing_msg.message_id
+        )
+        
+    except Exception as e:
+        logger.error(f"Error: {e}")
         await update.message.reply_text(
-            "❌ Mujhe phone number nahi mila.\n\n"
-            "Kripya phone number bhejiye:\n"
-            "Example: 9876543210 ya +919876543210"
+            "❌ Kuch error aaya hai. Thodi der baad try karein.\n"
+            "Please check your input format."
         )
-        return
-    
-    # Generate VCF
-    vcf_data = generate_vcf(data['name'], data['phone'], data['email'])
-    
-    # Create filename
-    filename = f"{data['name'].replace(' ', '_')}.vcf"
-    
-    # Save and send file
-    with open(filename, 'w') as f:
-        f.write(vcf_data)
-    
-    with open(filename, 'rb') as f:
-        caption = (
-            f"✅ **VCF File Ready!**\n\n"
-            f"👤 Name: {data['name']}\n"
-            f"📞 Phone: {data['phone']}\n"
-            f"📧 Email: {data['email'] or 'Not provided'}\n\n"
-            f"💾 Save to contacts and share!"
-        )
-        await update.message.reply_document(
-            document=f,
-            caption=caption,
-            parse_mode='Markdown'
-        )
-    
-    # Clean up
-    os.remove(filename)
 
 # Error handler
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception while handling update:", exc_info=context.error)
-    await update.message.reply_text("❌ Kuch error aaya hai. Thodi der baad try karein.")
+    await update.message.reply_text("❌ Server error. Please try again later.")
 
 def main():
     # Create application
@@ -174,7 +196,7 @@ def main():
     
     # Start bot
     application.run_polling()
-    print("Bot started successfully!")
+    print("✅ Bulk VCF Bot started successfully!")
 
 if __name__ == '__main__':
     main()
